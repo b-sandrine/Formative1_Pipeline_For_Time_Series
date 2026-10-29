@@ -1,4 +1,14 @@
-.venv/
-__pycache__/
-.pytest_cache/
+# Secrets: real credentials live in .env, only .env.example is committed
 .env
+.env.*
+!.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# macOS
+.DS_Store
