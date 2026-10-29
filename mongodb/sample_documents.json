@@ -1,0 +1,55 @@
+{
+  "_note": "Sample documents in MongoDB Extended JSON. The two reading values come from the first lines of dataset/household_power_consumption.txt, and the missing-value reading from the line for 21/12/2006 11:23:00. The ObjectId values and the imported_at date are placeholders: the real ones are generated at import time. No forecast_results sample is shown because no model has been run yet.",
+  "dataset_sources": [
+    {
+      "_id": { "$oid": "000000000000000000000001" },
+      "name": "Household Electric Power Consumption",
+      "description": "One-minute household electricity measurements, December 2006 to November 2010.",
+      "source_url": "https://www.kaggle.com/datasets/uciml/electric-power-consumption-data-set",
+      "original_filename": "household_power_consumption.txt",
+      "timezone_note": "Local time as recorded; the file has no time zone. Stored as-is, not converted.",
+      "imported_at": { "$date": "2026-01-01T00:00:00Z" }
+    }
+  ],
+  "energy_readings": [
+    {
+      "source_id": { "$oid": "000000000000000000000001" },
+      "timestamp": { "$date": "2006-12-16T17:24:00Z" },
+      "measurements": {
+        "global_active_power": 4.216,
+        "global_reactive_power": 0.418,
+        "voltage": 234.84,
+        "global_intensity": 18.4,
+        "sub_metering_1": 0.0,
+        "sub_metering_2": 1.0,
+        "sub_metering_3": 17.0
+      }
+    },
+    {
+      "source_id": { "$oid": "000000000000000000000001" },
+      "timestamp": { "$date": "2006-12-16T17:25:00Z" },
+      "measurements": {
+        "global_active_power": 5.36,
+        "global_reactive_power": 0.436,
+        "voltage": 233.63,
+        "global_intensity": 23.0,
+        "sub_metering_1": 0.0,
+        "sub_metering_2": 1.0,
+        "sub_metering_3": 16.0
+      }
+    },
+    {
+      "source_id": { "$oid": "000000000000000000000001" },
+      "timestamp": { "$date": "2006-12-21T11:23:00Z" },
+      "measurements": {
+        "global_active_power": null,
+        "global_reactive_power": null,
+        "voltage": null,
+        "global_intensity": null,
+        "sub_metering_1": null,
+        "sub_metering_2": null,
+        "sub_metering_3": null
+      }
+    }
+  ]
+}
