@@ -1,0 +1,46 @@
+erDiagram
+    dataset_sources ||--o{ energy_measurements : "has"
+    dataset_sources ||--o{ forecast_runs : "is used by"
+    forecast_runs ||--o{ forecast_predictions : "produces"
+
+    dataset_sources {
+        INT source_id PK
+        VARCHAR name "UNIQUE with original_filename"
+        TEXT description
+        VARCHAR source_url
+        VARCHAR original_filename
+        VARCHAR timezone_note
+        TIMESTAMP imported_at
+    }
+
+    energy_measurements {
+        BIGINT measurement_id PK
+        INT source_id FK
+        DATETIME measured_at "UNIQUE with source_id"
+        DECIMAL global_active_power "kW, nullable"
+        DECIMAL global_reactive_power "kW, nullable"
+        DECIMAL voltage "V, nullable"
+        DECIMAL global_intensity "A, nullable"
+        DECIMAL sub_metering_1 "Wh, nullable"
+        DECIMAL sub_metering_2 "Wh, nullable"
+        DECIMAL sub_metering_3 "Wh, nullable"
+    }
+
+    forecast_runs {
+        INT run_id PK
+        INT source_id FK
+        VARCHAR model_name
+        VARCHAR target_column
+        TIMESTAMP run_at
+        DOUBLE rmse "nullable"
+        DOUBLE mae "nullable"
+        JSON parameters "nullable"
+        TEXT notes "nullable"
+    }
+
+    forecast_predictions {
+        BIGINT prediction_id PK
+        INT run_id FK
+        DATETIME predicted_for "UNIQUE with run_id"
+        DECIMAL predicted_value
+    }
