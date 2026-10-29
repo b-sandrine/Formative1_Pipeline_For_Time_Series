@@ -26,3 +26,11 @@ def get_mysql_config() -> dict:
 def get_dataset_path() -> Path:
     """Dataset location: DATASET_PATH if set, otherwise dataset/household_power_consumption.txt."""
     return Path(os.getenv("DATASET_PATH", DEFAULT_DATASET_PATH))
+
+
+def get_mongo_config() -> dict:
+    """Return the MongoDB connection string and database name."""
+    return {
+        "uri": os.getenv("MONGODB_URI", "mongodb://localhost:27017/"),
+        "database": os.getenv("MONGODB_DATABASE", "energy_consumption"),
+    }

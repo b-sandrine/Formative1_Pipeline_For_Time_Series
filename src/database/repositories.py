@@ -56,3 +56,53 @@ def insert_measurements(connection, source_id: int, records: list) -> int:
     finally:
         cursor.close()
     return inserted
+
+
+# ---------------------------------------------------------------------------
+# MongoDB
+# ---------------------------------------------------------------------------
+def get_or_create_mongo_source(database, original_filename: str):
+    """Return the _id of this file's source document, creating it the first time."""
+    from datetime import datetime, timezone
+    from pymongo.errors import DuplicateKeyError
+
+    filter_ = {"name": SOURCE_NAME, "original_filename": original_filename}
+    existing = database.dataset_sources.find_one(filter_, {"_id": 1})
+    if existing is not None:
+        return existing["_id"]
+    try:
+        return database.dataset_sources.insert_one({
+            **filter_,
+            "description": SOURCE_DESCRIPTION,
+            "source_url": SOURCE_URL,
+            "timezone_note": SOURCE_TIMEZONE_NOTE,
+            "imported_at": datetime.now(timezone.utc),
+        }).inserted_id
+    except DuplicateKeyError:  # another run created it between our two steps
+        return database.dataset_sources.find_one(filter_, {"_id": 1})["_id"]
+
+
+def insert_mongo_readings(database, source_id, records: list) -> int:
+    """Insert one batch of readings. Returns how many were new.
+
+    Readings whose (source_id, timestamp) already exist are rejected by the
+    unique index and skipped. Any other error is raised, not hidden.
+    """
+    from pymongo.errors import BulkWriteError
+
+    documents = [
+        {
+            "source_id": source_id,
+            # A naive datetime is stored as-is (see "Timestamps" in collection_design.md).
+            "timestamp": record["measured_at"],
+            "measurements": {column: record[column] for column in MEASUREMENT_COLUMNS},
+        }
+        for record in records
+    ]
+    try:
+        return len(database.energy_readings.insert_many(documents, ordered=False).inserted_ids)
+    except BulkWriteError as error:
+        other_errors = [e for e in error.details["writeErrors"] if e["code"] != 11000]
+        if other_errors:
+            raise
+        return error.details["nInserted"]
