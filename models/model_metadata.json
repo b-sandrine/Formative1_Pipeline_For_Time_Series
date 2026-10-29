@@ -1,0 +1,10 @@
+{
+    "feature_names": [
+        "power_lag_1h",
+        "power_lag_24h",
+        "voltage_lag_1h",
+        "intensity_lag_1h",
+        "rolling_mean_24h"
+    ],
+    "target": "Global_active_power"
+}
