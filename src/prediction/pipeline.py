@@ -55,10 +55,8 @@ def run(
     those hours is forecast one step ahead from the data available just before it; hours
     whose inputs fall in a data gap are skipped and listed in `skipped_hours`.
     """
-    if horizon < 1:
-        raise ValueError("--horizon must be at least 1.")
-    if backtest_hours < 0:
-        raise ValueError("--backtest-hours can't be negative.")
+    if horizon < 1 or backtest_hours < 0:
+        raise ValueError("--horizon must be at least 1 and --backtest-hours can't be negative.")
     if backtest_hours and (as_of is None or horizon != 1):
         raise ValueError("--backtest-hours needs --as-of and forecasts one hour at a time (horizon 1).")
     bundle = load_bundle(model_dir)
@@ -69,7 +67,7 @@ def run(
     if live:
         anchor = records_to_frame(client.latest(), target=None)["timestamp"].max().floor(freq)
     else:
-        anchor = pd.Timestamp(as_of).floor(freq)
+        anchor = _local_time(pd.Timestamp(as_of)).floor(freq)
 
     steps = max(backtest_hours, 1)
     start = anchor - (lookback - 1) * step
@@ -83,8 +81,11 @@ def run(
     # Hourly buckets are independent, so resampling once and slicing at each cutoff
     # gives exactly the history that was known at that hour.
     hourly_all, dropped_partial = resample_hourly(readings, freq, drop_partial=live)
+    if hourly_all.empty:
+        raise ValueError("The API only returned readings from the current, unfinished hour; there is no history yet.")
     if live:
         anchor = min(anchor, hourly_all.index[-1])
+    used_records = int((readings["timestamp"] < anchor + step).sum())
 
     history, report, predictions, skipped = None, None, [], []
     for k in range(steps):
@@ -93,7 +94,8 @@ def run(
         hourly, imputed, longest_gap = fill_short_gaps(window, bundle.target)
         if history is None:
             history = hourly
-            report = PreprocessReport(len(readings), len(hourly), imputed, longest_gap, dropped_partial)
+            hours = int(hourly[bundle.target].notna().sum())
+            report = PreprocessReport(used_records, hours, imputed, longest_gap, dropped_partial)
         try:
             predictions.append(forecast(hourly, bundle, horizon))
         except MissingDataError:
@@ -106,6 +108,15 @@ def run(
     predictions = pd.concat(predictions)
     actuals = None if live else _actuals(readings, predictions.index, bundle)
     return PipelineResult(client.source, anchor, bundle, history, report, predictions, actuals, skipped)
+
+
+def _local_time(ts: pd.Timestamp) -> pd.Timestamp:
+    """The data is local clock time with no zone (Task 2); like the Task 3 API, accept UTC 'Z' only."""
+    if ts.tzinfo is None:
+        return ts
+    if ts.utcoffset() != pd.Timedelta(0):
+        raise ValueError("--as-of must be local time without a time-zone offset, e.g. 2010-11-20T17:00")
+    return ts.tz_localize(None)
 
 
 def _actuals(readings: pd.DataFrame, index: pd.DatetimeIndex, bundle: ModelBundle) -> pd.Series:

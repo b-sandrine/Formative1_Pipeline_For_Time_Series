@@ -19,8 +19,6 @@ def forecast(hourly: pd.DataFrame, bundle: ModelBundle, horizon: int = 1) -> pd.
     Each step appends an empty hour, computes its features from the history, predicts it,
     and writes the prediction back so the next step's lags can use it.
     """
-    if horizon < 1:
-        raise ValueError("horizon must be at least 1")
     limit = max_horizon(bundle.features, bundle.target, bundle.is_sequence)
     if horizon > limit:
         raise ValueError(
