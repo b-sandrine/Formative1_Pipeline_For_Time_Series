@@ -20,7 +20,8 @@ from src.prediction.preprocessing import (
     max_horizon,
     records_to_frame,
     required_history,
-    to_hourly,
+    fill_short_gaps,
+    resample_hourly,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -115,21 +116,21 @@ def test_records_to_frame_rejects_records_without_target():
         records_to_frame([{"timestamp": "2010-01-01T00:00:00", "voltage": 240}])
 
 
-def test_to_hourly_averages_minutes_and_drops_incomplete_last_hour():
+def test_resample_averages_minutes_and_drops_incomplete_last_hour():
     index = pd.date_range("2010-01-01 00:00", "2010-01-01 02:29", freq="1min")
     df = pd.DataFrame({"timestamp": index, TARGET: np.r_[np.full(60, 1.0), np.full(60, 3.0), np.full(30, 9.0)]})
-    hourly, report = to_hourly(df, drop_partial=True)
+    hourly, dropped = resample_hourly(df, drop_partial=True)
     assert hourly[TARGET].tolist() == [1.0, 3.0]
-    assert report.dropped_partial_hour
+    assert dropped
     # Historical data (backtests) keeps an hour whose final minutes are missing.
-    assert to_hourly(df)[0][TARGET].tolist() == [1.0, 3.0, 9.0]
+    assert resample_hourly(df)[0][TARGET].tolist() == [1.0, 3.0, 9.0]
 
 
-def test_to_hourly_interpolates_missing_hours():
+def test_fill_short_gaps_interpolates_missing_hours():
     df = pd.DataFrame({"timestamp": pd.to_datetime(["2010-01-01 00:00", "2010-01-01 03:00"]), TARGET: [1.0, 4.0]})
-    hourly, report = to_hourly(df)
+    hourly, imputed, longest = fill_short_gaps(resample_hourly(df)[0])
     assert hourly[TARGET].tolist() == [1.0, 2.0, 3.0, 4.0]
-    assert (report.imputed_hours, report.longest_gap_hours) == (2, 2)
+    assert (imputed, longest) == (2, 2)
 
 
 def test_build_features_uses_only_past_values(hourly):
@@ -261,14 +262,15 @@ def test_walk_forward_backtest_forecasts_each_hour_from_its_own_past(minute_http
 def test_long_gaps_stay_missing_and_tails_are_not_extrapolated():
     times = pd.to_datetime(["2010-01-01 00:00", "2010-01-01 02:00", "2010-01-01 08:00", "2010-01-01 09:00"])
     df = pd.DataFrame({"timestamp": times, TARGET: [1.0, 3.0, 9.0, 10.0]})
-    hourly, report = to_hourly(df)
+    raw = resample_hourly(df)[0]
+    hourly, imputed, longest = fill_short_gaps(raw)
     assert hourly[TARGET].iloc[1] == 2.0
     assert hourly[TARGET].iloc[3:8].isna().all()
-    assert (report.imputed_hours, report.longest_gap_hours) == (1, 5)
-    window = hourly.reindex(pd.date_range("2010-01-01 00:00", "2010-01-01 11:00", freq="1h"))
-    from src.prediction.preprocessing import fill_short_gaps
-
-    assert fill_short_gaps(window)[0][TARGET].iloc[-2:].isna().all()
+    assert (imputed, longest) == (1, 5)
+    window = raw.reindex(pd.date_range("2009-12-31 20:00", "2010-01-01 11:00", freq="1h"))
+    filled, _, longest = fill_short_gaps(window)
+    assert filled[TARGET].iloc[:4].isna().all() and filled[TARGET].iloc[-2:].isna().all()
+    assert longest == 5
 
 
 def test_walk_forward_skips_hours_in_a_data_gap_without_repeating_any(hourly):
@@ -306,10 +308,10 @@ def test_records_to_frame_uses_the_requested_target():
         records_to_frame([{"measured_at": "2010-01-01T00:00:00", "voltage": 240}], target="global_intensity")
 
 
-@pytest.mark.parametrize("flag", ["--horizon", "--backtest-hours", "--lookback-hours"])
-def test_cli_rejects_non_positive_numbers(flag, capsys):
+def test_cli_number_options(capsys):
+    assert parse_args(["--backtest-hours", "0"]).backtest_hours == 0
     with pytest.raises(SystemExit):
-        parse_args([flag, "0"])
+        parse_args(["--lookback-hours", "0"])
     assert "must be at least 1" in capsys.readouterr().err
 
 
@@ -328,3 +330,44 @@ def test_client_closes_only_the_http_client_it_created():
     with ReadingsClient() as client:
         owned = client.http
     assert owned.is_closed
+
+
+def test_gaps_are_judged_per_column():
+    index = pd.date_range("2010-01-01", periods=10, freq="1h")
+    hourly = pd.DataFrame({TARGET: np.arange(10.0), "voltage": np.arange(10.0) + 230}, index=index)
+    hourly.loc[index[2], "voltage"] = np.nan  # 1h voltage gap, target complete: filled
+    hourly.loc[index[4:9], TARGET] = np.nan  # 5h target gap: kept missing, real voltage kept
+    filled, imputed, longest = fill_short_gaps(hourly)
+    assert filled.loc[index[2], "voltage"] == 232.0
+    assert filled[TARGET].iloc[4:9].isna().all()
+    assert filled["voltage"].iloc[4:9].tolist() == [234.0, 235.0, 236.0, 237.0, 238.0]
+    assert (imputed, longest) == (0, 5)
+
+    long_voltage = hourly.assign(**{TARGET: np.arange(10.0)})
+    long_voltage.loc[index[3:8], "voltage"] = np.nan
+    assert fill_short_gaps(long_voltage)[0]["voltage"].iloc[3:8].isna().all()
+
+
+def test_as_of_accepts_utc_z_and_rejects_offsets(http, hourly, model_dir):
+    as_of = hourly.index[-30]
+    utc = run(ReadingsClient(http=http), model_dir, as_of=f"{as_of.isoformat()}Z")
+    assert utc.anchor == as_of
+    with pytest.raises(ValueError, match="time-zone offset"):
+        run(ReadingsClient(http=http), model_dir, as_of=f"{as_of.isoformat()}+02:00")
+
+
+def test_live_run_with_only_an_unfinished_hour_is_explained(hourly, model_dir):
+    minutes = hourly.resample("1min").ffill()
+    minutes = minutes[(minutes.index >= hourly.index[-2]) & (minutes.index < hourly.index[-2] + pd.Timedelta("30min"))]
+    http = api_client(create_app(minutes))
+    with pytest.raises(ValueError, match="unfinished hour"):
+        run(ReadingsClient(http=http), model_dir)
+
+
+def test_report_counts_only_history_records(minute_http, hourly):
+    as_of = hourly.index[-30]
+    result = run(ReadingsClient(http=minute_http), ROOT / "models", as_of=as_of, backtest_hours=12)
+    history_minutes = hourly.resample("1min").ffill()
+    history_minutes.iloc[::97] = np.nan
+    expected = int(((history_minutes.index >= result.history.index[0]) & (history_minutes.index < as_of + pd.Timedelta("1h"))).sum())
+    assert result.report.raw_records == expected
