@@ -31,16 +31,23 @@ HISTORY_HOURS_PLOTTED = 72
 COLORS = {"history": "#2a78d6", "forecast": "#eb6834", "actual": "#1baf7a", "ink": "#52514e", "grid": "#e4e3df"}
 
 
+def positive_int(text: str) -> int:
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1, got {value}")
+    return value
+
+
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--api-url", default=os.getenv("API_URL", "http://localhost:5000"))
     parser.add_argument("--source", choices=["sql", "mongo"], default="sql", help="which database the API reads from")
     parser.add_argument("--model-dir", default=str(ROOT / "models"))
-    parser.add_argument("--horizon", type=int, default=1, help="hours to forecast")
+    parser.add_argument("--horizon", type=positive_int, default=1, help="hours to forecast")
     parser.add_argument("--as-of", type=datetime.fromisoformat, help="forecast from this past hour and compare with actuals")
-    parser.add_argument("--backtest-hours", type=int, default=0,
+    parser.add_argument("--backtest-hours", type=positive_int, default=0,
                         help="with --as-of: forecast each of the next N hours one step ahead and report the error")
-    parser.add_argument("--lookback-hours", type=int, help="history to fetch (default: what the model needs + 24h)")
+    parser.add_argument("--lookback-hours", type=positive_int, help="history to fetch (default: what the model needs + 24h)")
     parser.add_argument("--output-dir", default=str(ROOT / "outputs" / "predictions"))
     parser.add_argument("--no-plot", action="store_true")
     return parser.parse_args(argv)
@@ -48,10 +55,10 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    client = ReadingsClient(args.api_url, args.source)
     print(f"Forecasting from the {args.source.upper()} API at {args.api_url}")
     try:
-        result = run(client, args.model_dir, args.horizon, args.as_of, args.lookback_hours, args.backtest_hours)
+        with ReadingsClient(args.api_url, args.source) as client:
+            result = run(client, args.model_dir, args.horizon, args.as_of, args.lookback_hours, args.backtest_hours)
     except (APIError, FileNotFoundError, ImportError, ValueError) as exc:
         print(f"\nError: {exc}", file=sys.stderr)
         return 1
@@ -94,6 +101,8 @@ def print_summary(result: PipelineResult, walk_forward: bool = False) -> None:
         print(line)
     if result.mae is not None:
         print(f"\n  MAE over the window: {result.mae:.3f} kW")
+    if result.skipped_hours:
+        print(f"  Skipped {len(result.skipped_hours)} hour(s) whose inputs fall in a data gap.")
 
 
 def to_json(result: PipelineResult, args: argparse.Namespace) -> dict:
@@ -118,6 +127,7 @@ def to_json(result: PipelineResult, args: argparse.Namespace) -> dict:
         "preprocessing": vars(result.report),
         "forecast": rows,
         "mae_kw": result.mae,
+        "skipped_hours": [ts.isoformat() for ts in result.skipped_hours],
     }
 
 
