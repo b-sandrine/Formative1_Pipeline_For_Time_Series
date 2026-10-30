@@ -26,6 +26,9 @@ KEY_ALIASES = {
 }
 IGNORED_KEYS = {"_id", "id", "measurement_id", "source_id", "reading_id", "household_id"}
 
+# Task 1 names features like power_lag_1h / intensity_lag_1h / rolling_mean_24h.
+COLUMN_ALIASES = {"power": TARGET, "intensity": "global_intensity", "reactive_power": "global_reactive_power"}
+
 LAG_RE = re.compile(r"^(?:(?P<col>[a-z0-9_]+?)_)?lag_(?P<k>\d+)$")
 ROLLING_RE = re.compile(r"^(?:(?P<col>[a-z0-9_]+?)_)?rolling_(?P<stat>mean|std|min|max)_(?P<w>\d+)$")
 
@@ -122,14 +125,23 @@ def build_features(hourly: pd.DataFrame, features: list[str], target: str = TARG
     """
     out = pd.DataFrame(index=hourly.index)
     for name in features:
-        out[name] = _feature(hourly, name, target)
+        out[name] = _feature(hourly, canonical_feature(name), target)
     return out
+
+
+def canonical_feature(name: str) -> str:
+    """Maps alternative spellings onto the scheme above: power_lag_1h -> global_active_power_lag_1."""
+    name = re.sub(r"(\d+)h$", r"\1", name.strip().lower())
+    for alias, column in COLUMN_ALIASES.items():
+        if name.startswith((f"{alias}_lag_", f"{alias}_rolling_")):
+            return column + name[len(alias):]
+    return name
 
 
 def required_history(features: list[str]) -> int:
     """Hours of past data needed before the first row has every feature defined."""
     needed = 1
-    for name in features:
+    for name in map(canonical_feature, features):
         if m := LAG_RE.match(name):
             needed = max(needed, int(m["k"]))
         elif m := ROLLING_RE.match(name):
@@ -145,7 +157,7 @@ def max_horizon(features: list[str], target: str = TARGET, sequence_model: bool 
     voltage_lag_2 caps the horizon at 2 hours.
     """
     limit = 10_000
-    for name in features:
+    for name in map(canonical_feature, features):
         if name in CALENDAR:
             continue
         if m := LAG_RE.match(name):

@@ -62,7 +62,7 @@ def load_bundle(model_dir: str | Path) -> ModelBundle:
     model_type = meta.get("model_type", "sklearn")
     if model_type not in MODEL_TYPES:
         raise ValueError(f"model_type must be one of {MODEL_TYPES}, got {model_type!r}")
-    features = meta.get("features")
+    features = meta.get("features") or meta.get("feature_names")
     if not features:
         raise ValueError(f"{meta_path} must list the model's input columns under 'features', in training order.")
     sequence_length = int(meta.get("sequence_length") or 0)
@@ -76,7 +76,7 @@ def load_bundle(model_dir: str | Path) -> ModelBundle:
     return ModelBundle(
         model=_load_keras(model_file) if model_type == "keras" else joblib.load(model_file),
         features=list(features),
-        target=meta.get("target", TARGET),
+        target=meta.get("target", TARGET).lower(),
         model_type=model_type,
         frequency=meta.get("frequency", "1h"),
         sequence_length=sequence_length,
