@@ -9,5 +9,5 @@
     "target": "Global_active_power",
     "selected_experiment": "RF-50-depth8",
     "test_rmse": 0.52449002067727,
-    "test_mae": 0.37364952836721377
+    "test_mae": 0.3736495283672139
 }

@@ -62,8 +62,9 @@ def test_mongo_config_defaults_and_override(clean_env):
 
 def test_dataset_path_default_and_override(clean_env):
     assert config.get_dataset_path() == config.DEFAULT_DATASET_PATH
-    clean_env.setenv("DATASET_PATH", "/tmp/somewhere.txt")
-    assert str(config.get_dataset_path()) == "/tmp/somewhere.txt"
+    override = config.DEFAULT_DATASET_PATH.parent / "somewhere.txt"
+    clean_env.setenv("DATASET_PATH", str(override))
+    assert config.get_dataset_path() == override
 
 
 # ---------------------------------------------------------------------- parsing
