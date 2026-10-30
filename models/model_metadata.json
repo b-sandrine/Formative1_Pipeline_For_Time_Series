@@ -1,0 +1,13 @@
+{
+    "feature_names": [
+        "power_lag_1h",
+        "power_lag_24h",
+        "voltage_lag_1h",
+        "intensity_lag_1h",
+        "rolling_mean_24h"
+    ],
+    "target": "Global_active_power",
+    "selected_experiment": "RF-50-depth8",
+    "test_rmse": 0.52449002067727,
+    "test_mae": 0.37364952836721377
+}
