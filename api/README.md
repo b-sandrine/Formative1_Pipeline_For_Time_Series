@@ -84,7 +84,7 @@ Missing measurements are JSON `null`, not `0`.
 - `2007-01-01` covers that whole calendar day. The same start and end date returns that one day.
 - `2007-01-01T00:00:00` is used as written. The end is exclusive, matching `sql/queries.sql`: `measured_at >= start AND measured_at < end`.
 
-A range is capped at 5000 rows unless you pass `limit` (maximum 20000). A `GET` with no dates returns the 100 newest rows. If `may_have_more` is true, raise `limit` or narrow the dates. The table holds about one row per minute from 2006 to 2010, so the cap is deliberate.
+A range is capped at 5000 rows unless you pass `limit` (maximum 20000). A `GET` with no dates returns the 100 newest rows. `may_have_more` is true whenever the response contains exactly `limit` rows; this means more rows may exist, not that the API has confirmed another page. Raise `limit` or narrow the dates to retrieve a smaller range. The table holds about one row per minute from 2006 to 2010, so the cap is deliberate.
 
 ## Create, update, delete
 
