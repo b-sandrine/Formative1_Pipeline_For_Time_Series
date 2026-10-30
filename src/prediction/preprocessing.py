@@ -81,15 +81,6 @@ def records_to_frame(records: list[dict], target: str | None = TARGET) -> pd.Dat
     return df[["timestamp", *columns]].sort_values("timestamp").reset_index(drop=True)
 
 
-def to_hourly(
-    df: pd.DataFrame, freq: str = "1h", target: str = TARGET, drop_partial: bool = False
-) -> tuple[pd.DataFrame, PreprocessReport]:
-    """Resamples readings to `freq` means and fills short gaps (see `fill_short_gaps`)."""
-    hourly, dropped = resample_hourly(df, freq, drop_partial)
-    hourly, imputed, longest = fill_short_gaps(hourly, target)
-    return hourly, PreprocessReport(len(df), len(hourly), imputed, longest, dropped)
-
-
 def resample_hourly(df: pd.DataFrame, freq: str = "1h", drop_partial: bool = False) -> tuple[pd.DataFrame, bool]:
     """Averages readings (minute-level or already hourly) into `freq` buckets; missing values are skipped.
 
@@ -111,20 +102,29 @@ def resample_hourly(df: pd.DataFrame, freq: str = "1h", drop_partial: bool = Fal
 
 
 def fill_short_gaps(hourly: pd.DataFrame, target: str = TARGET) -> tuple[pd.DataFrame, int, int]:
-    """Time-interpolates gaps of up to MAX_GAP_HOURS between real readings.
+    """Time-interpolates gaps of up to MAX_GAP_HOURS between real readings, column by column.
 
-    Only uses values on both sides of a gap, never extrapolates past the last reading.
-    Returns the frame, how many hours were filled, and the longest gap seen.
+    Never extrapolates past the first or last reading, and never touches real values.
+    Returns the frame, how many target hours were filled, and the longest target gap
+    between the first and last real reading.
     """
-    missing = hourly[target].isna()
-    if not missing.any():
-        return hourly, 0, 0
-    gap_length = missing.groupby((~missing).cumsum()).transform("sum")
-    long_gap = missing & (gap_length > MAX_GAP_HOURS)
     filled = hourly.interpolate(method="time", limit_area="inside")
-    filled.loc[long_gap] = np.nan
+    for column in hourly.columns:
+        missing = hourly[column].isna()
+        if missing.any():
+            filled.loc[missing & (_gap_lengths(missing) > MAX_GAP_HOURS), column] = np.nan
+
+    missing = hourly[target].isna()
     imputed = int((missing & filled[target].notna()).sum())
-    return filled, imputed, int(gap_length[missing].max())
+    observed = hourly[target].loc[hourly[target].first_valid_index() : hourly[target].last_valid_index()]
+    inner_missing = observed.isna()
+    longest = int(_gap_lengths(inner_missing)[inner_missing].max()) if inner_missing.any() else 0
+    return filled, imputed, longest
+
+
+def _gap_lengths(missing: pd.Series) -> pd.Series:
+    """For each row, the length of the run of missing values it belongs to."""
+    return missing.groupby((~missing).cumsum()).transform("sum")
 
 
 def build_features(hourly: pd.DataFrame, features: list[str], target: str = TARGET) -> pd.DataFrame:
