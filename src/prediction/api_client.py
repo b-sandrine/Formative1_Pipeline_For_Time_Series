@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 
 import httpx
@@ -35,9 +36,20 @@ class ReadingsClient:
             raise ValueError(f"source must be one of {SOURCES}, got {source!r}")
         self.base_url = base_url.rstrip("/")
         self.source = source
+        self._owns_http = http is None
         self.http = http or httpx.Client(base_url=self.base_url, timeout=timeout)
         self.latest_path = latest_path.format(source=source)
         self.range_path = range_path.format(source=source)
+
+    def close(self) -> None:
+        if self._owns_http:
+            self.http.close()
+
+    def __enter__(self) -> ReadingsClient:
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
 
     def latest(self) -> list[dict]:
         records = _unwrap(self._get(self.latest_path))
@@ -48,6 +60,7 @@ class ReadingsClient:
     def by_range(self, start: datetime, end: datetime, page_size: int = PAGE_SIZE) -> list[dict]:
         """All readings in the range, fetched in pages because the API caps `limit`."""
         records: list[dict] = []
+        seen: set[str] = set()
         while True:
             params = {
                 "start_date": start.isoformat(timespec="seconds"),
@@ -55,13 +68,15 @@ class ReadingsClient:
                 "limit": page_size,
             }
             page = _unwrap(self._get(self.range_path, params))
-            records.extend(page)
+            new = [r for r in page if _record_key(r) not in seen]
+            seen.update(map(_record_key, new))
+            records.extend(new)
             if len(page) < page_size:
                 return records
-            next_start = _record_time(page[-1]) + timedelta(seconds=1)
-            if next_start <= start:
-                return records
-            start = next_start
+            # Restart at the last timestamp, not after it, since other readings may share it;
+            # if the page ended where it started, step past it so paging always moves forward.
+            last = _record_time(page[-1])
+            start = last if last > start else last + timedelta(seconds=1)
 
     def _get(self, path: str, params: dict | None = None):
         try:
@@ -79,7 +94,11 @@ class ReadingsClient:
 def _record_time(record: dict) -> datetime:
     from src.prediction.preprocessing import records_to_frame
 
-    return records_to_frame([record])["timestamp"].iloc[0].to_pydatetime()
+    return records_to_frame([record], target=None)["timestamp"].iloc[0].to_pydatetime()
+
+
+def _record_key(record: dict) -> str:
+    return json.dumps(record, sort_keys=True, default=str)
 
 
 def _unwrap(body) -> list[dict]:
