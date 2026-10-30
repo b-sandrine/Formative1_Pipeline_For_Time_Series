@@ -6,7 +6,6 @@ import joblib
 import numpy as np
 import pandas as pd
 import pytest
-from fastapi.testclient import TestClient
 from sklearn.linear_model import Ridge
 
 from src.prediction import TARGET
@@ -25,6 +24,10 @@ from src.prediction.preprocessing import (
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET_ONLY = ["lag_1", "lag_2", "lag_24", "lag_168", "rolling_mean_24", "rolling_std_24", "hour", "dayofweek", "is_weekend"]
+
+
+def api_client(app) -> httpx.Client:
+    return httpx.Client(transport=httpx.WSGITransport(app=app), base_url="http://testserver")
 
 
 def save_model(model_dir: Path, hourly: pd.DataFrame, features: list[str]) -> Path:
@@ -47,7 +50,7 @@ def hourly():
 
 @pytest.fixture(scope="module")
 def http(hourly):
-    return TestClient(create_app(hourly))
+    return api_client(create_app(hourly))
 
 
 @pytest.fixture(scope="module")
@@ -55,7 +58,7 @@ def minute_http(hourly):
     """Minute-level readings like the Task 2 databases, with a few missing ("?") minutes."""
     minutes = hourly.resample("1min").ffill()
     minutes.iloc[::97] = np.nan
-    return TestClient(create_app(minutes))
+    return api_client(create_app(minutes))
 
 
 @pytest.fixture(scope="module")
@@ -208,3 +211,45 @@ def test_unreachable_api_is_explained():
     client = ReadingsClient("http://127.0.0.1:9", http=httpx.Client(base_url="http://127.0.0.1:9", timeout=1))
     with pytest.raises(APIError, match="Is it running"):
         client.latest()
+
+
+def test_task1_feature_names_match_task1_formulas(hourly):
+    """Same math as scripts/train_model.py, so the model sees what it was trained on."""
+    names = json.loads((ROOT / "models" / "model_metadata.json").read_text())["feature_names"]
+    feats = build_features(hourly, names)
+    expected = pd.DataFrame({
+        "power_lag_1h": hourly[TARGET].shift(1),
+        "power_lag_24h": hourly[TARGET].shift(24),
+        "voltage_lag_1h": hourly["voltage"].shift(1),
+        "intensity_lag_1h": hourly["global_intensity"].shift(1),
+        "rolling_mean_24h": hourly[TARGET].rolling(window=24).mean().shift(1),
+    })
+    pd.testing.assert_frame_equal(feats, expected[names], check_freq=False)
+
+
+@pytest.mark.parametrize("source", ["sql", "mongo"])
+def test_pipeline_runs_with_task1_model_and_task3_api(minute_http, source):
+    result = run(ReadingsClient(source=source, http=minute_http), ROOT / "models")
+    assert result.bundle.target == TARGET
+    assert len(result.predictions) == 1
+    assert 0 <= result.predictions.iloc[0] < 10
+    with pytest.raises(ValueError, match="1 hour"):
+        run(ReadingsClient(source=source, http=minute_http), ROOT / "models", horizon=2)
+
+
+def test_by_range_pages_through_the_api_limit(minute_http, hourly):
+    client = ReadingsClient(http=minute_http)
+    start, end = hourly.index[10].to_pydatetime(), hourly.index[20].to_pydatetime()
+    paged = client.by_range(start, end, page_size=250)
+    assert len(paged) == 600
+    assert paged == client.by_range(start, end)
+
+
+def test_walk_forward_backtest_forecasts_each_hour_from_its_own_past(minute_http, hourly):
+    as_of = hourly.index[-30]
+    result = run(ReadingsClient(http=minute_http), ROOT / "models", as_of=as_of, backtest_hours=12)
+    assert list(result.predictions.index) == list(hourly.index[-29:-17])
+    assert result.actuals.notna().all()
+    assert result.history.index[-1] == as_of
+    with pytest.raises(ValueError, match="--as-of"):
+        run(ReadingsClient(http=minute_http), ROOT / "models", backtest_hours=12)

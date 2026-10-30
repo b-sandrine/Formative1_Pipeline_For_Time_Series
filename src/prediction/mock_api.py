@@ -1,7 +1,7 @@
-"""Development stand-in for the Task 3 API, so the forecast script can be run before the real one is ready.
+"""Runs the real Task 3 Flask API on in-memory data, for when MySQL or MongoDB isn't available.
 
-It serves only the read routes the script uses (docs/INTEGRATION_CONTRACT.md), with records
-shaped like the Task 2 databases: flat MySQL rows under /sql, nested MongoDB documents under /mongo.
+The routes, validation, limits and JSON are the Task 3 API's (src/api); only the database is swapped
+for the dataset file held in memory. Read routes work; writes return 405.
 
     python -m src.prediction.mock_api --data dataset/household_power_consumption.txt
     python -m src.prediction.mock_api --synthetic
@@ -10,63 +10,54 @@ shaped like the Task 2 databases: flat MySQL rows under /sql, nested MongoDB doc
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, Query
 
+from src.api.app import create_app as create_api_app
+from src.api.errors import ApiError
+from src.api.serialization import reading_json
 from src.prediction import MEASUREMENTS
 
 
-def create_app(readings: pd.DataFrame) -> FastAPI:
-    """Serves `readings` (DatetimeIndex, MEASUREMENTS columns) at any frequency."""
-    readings = readings.sort_index()
-    app = FastAPI(title="Mock household power API (development only)")
+class InMemoryReadingStore:
+    """Read-only stand-in for SqlReadingStore / MongoReadingStore."""
 
-    def select(start: datetime | None, end: datetime | None, limit: int) -> pd.DataFrame:
-        rows = readings.loc[start:end] if start or end else readings
-        return rows.iloc[:limit]
+    def __init__(self, readings: pd.DataFrame, string_ids: bool = False):
+        self.readings = readings.sort_index()
+        self.string_ids = string_ids
 
-    @app.get("/sql/readings/latest")
-    def sql_latest():
-        return sql_rows(readings.iloc[[-1]])[0]
+    def latest(self):
+        return self._json(self.readings.iloc[[-1]])[0] if len(self.readings) else None
 
-    @app.get("/sql/readings")
-    def sql_range(start_date: datetime | None = None, end_date: datetime | None = None, limit: int = Query(1000, ge=1)):
-        return sql_rows(select(start_date, end_date, limit))
+    def list_recent(self, limit: int):
+        return self._json(self.readings.iloc[::-1].iloc[:limit])
 
-    @app.get("/mongo/readings/latest")
-    def mongo_latest():
-        return mongo_docs(readings.iloc[[-1]])[0]
+    def list_range(self, start, end, limit: int):
+        index = self.readings.index
+        return self._json(self.readings[(index >= start) & (index < end)].iloc[:limit])
 
-    @app.get("/mongo/readings")
-    def mongo_range(start_date: datetime | None = None, end_date: datetime | None = None, limit: int = Query(1000, ge=1)):
-        docs = mongo_docs(select(start_date, end_date, limit))
-        return {"count": len(docs), "data": docs}
+    def get(self, measurement_id):
+        return None
 
-    return app
+    def create(self, fields):
+        raise ApiError("The mock API is read-only", 405)
 
+    update = delete = create
 
-def sql_rows(frame: pd.DataFrame) -> list[dict]:
-    """Rows shaped like the Task 2 MySQL table energy_measurements."""
-    return [
-        {"measurement_id": int(ts.timestamp() // 60), "source_id": 1, "measured_at": ts.isoformat(), **values}
-        for ts, values in zip(frame.index, _values(frame))
-    ]
+    def _json(self, frame: pd.DataFrame) -> list[dict]:
+        rounded = frame[MEASUREMENTS].round(4).astype(object)
+        values = rounded.where(rounded.notna(), None).to_dict("records")
+        ids = (frame.index.astype("int64") // 60_000_000_000).tolist()
+        return [
+            reading_json(str(i) if self.string_ids else i, "1" if self.string_ids else 1, ts.to_pydatetime(), v)
+            for i, ts, v in zip(ids, frame.index, values)
+        ]
 
 
-def mongo_docs(frame: pd.DataFrame) -> list[dict]:
-    """Documents shaped like the Task 2 MongoDB collection energy_readings."""
-    return [
-        {"_id": f"{ts:%Y%m%d%H%M}", "source_id": "1", "timestamp": ts.isoformat() + "Z", "measurements": values}
-        for ts, values in zip(frame.index, _values(frame))
-    ]
-
-
-def _values(frame: pd.DataFrame) -> list[dict]:
-    rounded = frame[MEASUREMENTS].round(4).astype(object)
-    return rounded.where(rounded.notna(), None).to_dict("records")
+def create_app(readings: pd.DataFrame):
+    sql, mongo = InMemoryReadingStore(readings), InMemoryReadingStore(readings, string_ids=True)
+    return create_api_app(open_sql=lambda: (sql, lambda: None), open_mongo=lambda: (mongo, lambda: None))
 
 
 def load_raw_dataset(path: str) -> pd.DataFrame:
@@ -100,18 +91,16 @@ def synthetic_hourly(hours: int = 24 * 30, start: str = "2010-01-01", seed: int 
 
 
 def main() -> None:
-    import uvicorn
-
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--data", help="path to household_power_consumption.txt")
     group.add_argument("--synthetic", action="store_true")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=5000)
     args = parser.parse_args()
 
     readings = synthetic_hourly() if args.synthetic else load_raw_dataset(args.data)
     print(f"Serving {len(readings)} readings from {readings.index[0]} to {readings.index[-1]}")
-    uvicorn.run(create_app(readings), host="127.0.0.1", port=args.port)
+    create_app(readings).run(host="127.0.0.1", port=args.port)
 
 
 if __name__ == "__main__":
