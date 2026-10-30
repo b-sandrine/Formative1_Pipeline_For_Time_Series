@@ -54,6 +54,17 @@ readings from the API and predicts the next hour.
 
 Requires Python 3.10+, MySQL 8 and MongoDB.
 
+On Windows, create and activate the virtual environment in PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.example .env       # then fill in your MySQL / MongoDB settings
+```
+
+On macOS or Linux:
+
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
