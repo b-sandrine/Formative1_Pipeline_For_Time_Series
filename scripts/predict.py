@@ -43,9 +43,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--api-url", default=os.getenv("API_URL", "http://localhost:5000"))
     parser.add_argument("--source", choices=["sql", "mongo"], default="sql", help="which database the API reads from")
     parser.add_argument("--model-dir", default=str(ROOT / "models"))
-    parser.add_argument("--horizon", type=positive_int, default=1, help="hours to forecast")
+    parser.add_argument("--horizon", type=int, default=1, help="hours to forecast")
     parser.add_argument("--as-of", type=datetime.fromisoformat, help="forecast from this past hour and compare with actuals")
-    parser.add_argument("--backtest-hours", type=positive_int, default=0,
+    parser.add_argument("--backtest-hours", type=int, default=0,
                         help="with --as-of: forecast each of the next N hours one step ahead and report the error")
     parser.add_argument("--lookback-hours", type=positive_int, help="history to fetch (default: what the model needs + 24h)")
     parser.add_argument("--output-dir", default=str(ROOT / "outputs" / "predictions"))
@@ -83,7 +83,7 @@ def print_summary(result: PipelineResult, walk_forward: bool = False) -> None:
     print(f"\n[1/4] Model     {bundle.model_type} model, {len(bundle.features)} features, target {bundle.target}")
     print(f"[2/4] Fetched   {report.raw_records} records up to {result.anchor} ({result.source})")
     print(
-        f"[3/4] Cleaned   {report.hours} hourly rows, {report.imputed_hours} missing hours interpolated "
+        f"[3/4] Cleaned   {report.hours} hours with data, {report.imputed_hours} short gaps interpolated "
         f"(longest gap {report.longest_gap_hours}h)" + (", dropped incomplete last hour" if report.dropped_partial_hour else "")
     )
     if walk_forward:
