@@ -55,8 +55,9 @@ Save to the `models/` folder:
 }
 ```
 
-`features` must be in the **same order as the training columns**. Feature names follow this scheme,
-and Task 4 rebuilds them from the API data by name:
+`features` (or `feature_names`) must be in the **same order as the training columns**. Task 4 rebuilds
+them from the API data by name, using this scheme. Task 1's own style (`power_lag_1h`,
+`intensity_lag_1h`, `rolling_mean_24h`) is accepted too:
 
 | Name | Meaning at hour t |
 |---|---|
@@ -101,7 +102,7 @@ interpolates hours that have no readings at all.
 
 ## 5. Task 3 → Task 4: API routes
 
-Base URL `http://localhost:8000`. The same routes exist under `/sql` and `/mongo`.
+Base URL `http://localhost:5000` (Task 3's default). The same routes exist under `/sql` and `/mongo`.
 
 | Method | Route | Purpose |
 |---|---|---|
@@ -113,9 +114,8 @@ Base URL `http://localhost:8000`. The same routes exist under `/sql` and `/mongo
 | DELETE | `/{db}/readings/{id}` | delete |
 
 - Dates are ISO 8601 (`2010-11-20T17:00:00`).
-- **The range route must honour `limit` up to at least 15,000.** Task 4 needs about 8 days of minute
-  readings (about 11,500 records) in one call and sends `limit=100000`. A small default cap
-  (e.g. 1,000) is fine as long as `limit` can raise it.
+- The range route caps `limit` at 20,000. Task 4 asks for pages of 20,000 and fetches the next
+  page from the last timestamp when a page comes back full.
 - Return the records as the databases store them. Either of these works:
 
 ```json
@@ -133,5 +133,5 @@ Base URL `http://localhost:8000`. The same routes exist under `/sql` and `/mongo
 A bare list or a list wrapped as `{"data": [...]}` are both fine, and so are Mongo `$date` objects.
 Keep the field names from section 2. `Decimal` values serialized as strings (`"5.360"`) are fine too.
 
-Until the real API is up, `python -m src.prediction.mock_api --data dataset/household_power_consumption.txt`
-serves these read routes, with records in exactly the two shapes above, so Task 4 can be tested against it.
+Without MySQL or MongoDB, `python -m src.prediction.mock_api --data dataset/household_power_consumption.txt`
+runs the real Task 3 Flask app on in-memory data, so Task 4 can still be run end to end.
