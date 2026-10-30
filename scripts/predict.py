@@ -4,9 +4,10 @@ Fetches readings from the Task 3 API, preprocesses them the same way as Task 1, 
 trained model, and forecasts Global_active_power for the next hour(s).
 
 Examples:
-    python scripts/predict.py                                  # next hour, from the SQL API
-    python scripts/predict.py --source mongo --horizon 24      # next 24 hours, from MongoDB
-    python scripts/predict.py --as-of 2010-11-20T18:00 --horizon 6   # backtest vs real readings
+    python scripts/predict.py                                  # next hour, from the MySQL API
+    python scripts/predict.py --source mongo                   # next hour, from the MongoDB API
+    python scripts/predict.py --as-of 2010-11-20T17:00 --backtest-hours 24   # 24 one-hour forecasts vs real readings
+    python scripts/predict.py --horizon 24                     # 24 hours ahead, if the model's features allow it
 """
 
 from __future__ import annotations
@@ -32,11 +33,13 @@ COLORS = {"history": "#2a78d6", "forecast": "#eb6834", "actual": "#1baf7a", "ink
 
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--api-url", default=os.getenv("API_URL", "http://localhost:8000"))
+    parser.add_argument("--api-url", default=os.getenv("API_URL", "http://localhost:5000"))
     parser.add_argument("--source", choices=["sql", "mongo"], default="sql", help="which database the API reads from")
     parser.add_argument("--model-dir", default=str(ROOT / "models"))
     parser.add_argument("--horizon", type=int, default=1, help="hours to forecast")
     parser.add_argument("--as-of", type=datetime.fromisoformat, help="forecast from this past hour and compare with actuals")
+    parser.add_argument("--backtest-hours", type=int, default=0,
+                        help="with --as-of: forecast each of the next N hours one step ahead and report the error")
     parser.add_argument("--lookback-hours", type=int, help="history to fetch (default: what the model needs + 24h)")
     parser.add_argument("--output-dir", default=str(ROOT / "outputs" / "predictions"))
     parser.add_argument("--no-plot", action="store_true")
@@ -48,25 +51,27 @@ def main(argv=None) -> int:
     client = ReadingsClient(args.api_url, args.source)
     print(f"Forecasting from the {args.source.upper()} API at {args.api_url}")
     try:
-        result = run(client, args.model_dir, args.horizon, args.as_of, args.lookback_hours)
+        result = run(client, args.model_dir, args.horizon, args.as_of, args.lookback_hours, args.backtest_hours)
     except (APIError, FileNotFoundError, ImportError, ValueError) as exc:
         print(f"\nError: {exc}", file=sys.stderr)
         return 1
 
-    print_summary(result)
+    print_summary(result, walk_forward=args.backtest_hours > 0)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    stem = f"forecast_{args.source}_{result.anchor:%Y%m%dT%H%M}_h{args.horizon}"
+    stem = f"forecast_{args.source}_{result.anchor:%Y%m%dT%H%M}_" + (
+        f"bt{args.backtest_hours}" if args.backtest_hours else f"h{args.horizon}"
+    )
     json_path = output_dir / f"{stem}.json"
     json_path.write_text(json.dumps(to_json(result, args), indent=2))
     print(f"\nSaved {json_path.relative_to(ROOT) if json_path.is_relative_to(ROOT) else json_path}")
     if not args.no_plot:
-        plot_path = plot(result, output_dir / f"{stem}.png")
+        plot_path = plot(result, output_dir / f"{stem}.png", walk_forward=args.backtest_hours > 0)
         print(f"Saved {plot_path.relative_to(ROOT) if plot_path.is_relative_to(ROOT) else plot_path}")
     return 0
 
 
-def print_summary(result: PipelineResult) -> None:
+def print_summary(result: PipelineResult, walk_forward: bool = False) -> None:
     bundle, report = result.bundle, result.report
     print(f"\n[1/4] Model     {bundle.model_type} model, {len(bundle.features)} features, target {bundle.target}")
     print(f"[2/4] Fetched   {report.raw_records} records up to {result.anchor} ({result.source})")
@@ -74,7 +79,10 @@ def print_summary(result: PipelineResult) -> None:
         f"[3/4] Cleaned   {report.hours} hourly rows, {report.imputed_hours} missing hours interpolated "
         f"(longest gap {report.longest_gap_hours}h)" + (", dropped incomplete last hour" if report.dropped_partial_hour else "")
     )
-    print(f"[4/4] Forecast  {len(result.predictions)} hour(s) ahead\n")
+    if walk_forward:
+        print(f"[4/4] Forecast  {len(result.predictions)} hours, each one hour ahead (walk-forward backtest)\n")
+    else:
+        print(f"[4/4] Forecast  {len(result.predictions)} hour(s) ahead\n")
 
     has_actuals = result.actuals is not None
     print(f"  {'hour':<19}  {'predicted kW':>12}" + (f"  {'actual kW':>10}  {'error':>7}" if has_actuals else ""))
@@ -99,7 +107,7 @@ def to_json(result: PipelineResult, args: argparse.Namespace) -> dict:
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "api_url": args.api_url,
         "source": result.source,
-        "mode": "backtest" if args.as_of else "forecast",
+        "mode": "walk-forward backtest" if args.backtest_hours else "backtest" if args.as_of else "forecast",
         "anchor_timestamp": result.anchor.isoformat(),
         "target": result.bundle.target,
         "model": {
@@ -113,7 +121,7 @@ def to_json(result: PipelineResult, args: argparse.Namespace) -> dict:
     }
 
 
-def plot(result: PipelineResult, path: Path) -> Path:
+def plot(result: PipelineResult, path: Path, walk_forward: bool = False) -> Path:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -134,7 +142,9 @@ def plot(result: PipelineResult, path: Path) -> Path:
                 markersize=5, markeredgecolor="white", label="Actual")
 
     ax.axvline(result.anchor, color=COLORS["ink"], linewidth=1, linestyle=":")
-    title = f"Household power forecast, next {len(result.predictions)}h from {result.anchor:%Y-%m-%d %H:%M}"
+    n = len(result.predictions)
+    title = (f"{n} one-hour-ahead forecasts from {result.anchor:%Y-%m-%d %H:%M}" if walk_forward
+             else f"Household power forecast, next {n}h from {result.anchor:%Y-%m-%d %H:%M}")
     if result.mae is not None:
         title += f" (MAE {result.mae:.3f} kW)"
     ax.set_title(title, loc="left", fontsize=12, color="#0b0b0b")

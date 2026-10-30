@@ -39,12 +39,16 @@ def run(
     horizon: int = 1,
     as_of: datetime | str | None = None,
     lookback_hours: int | None = None,
+    backtest_hours: int = 0,
 ) -> PipelineResult:
     """Forecasts `horizon` hours after the latest reading, or after `as_of` for a backtest.
 
     In backtest mode the real readings for the forecast window are fetched too, so the
-    prediction can be compared with what actually happened.
+    prediction can be compared with what actually happened. With `backtest_hours`, each of
+    those hours is forecast one step ahead from the data available just before it.
     """
+    if backtest_hours and (as_of is None or horizon != 1):
+        raise ValueError("--backtest-hours needs --as-of and forecasts one hour at a time (horizon 1).")
     bundle = load_bundle(model_dir)
     step = pd.Timedelta(bundle.frequency)
     needed = required_history(bundle.features) + bundle.sequence_length
@@ -55,23 +59,32 @@ def run(
     else:
         anchor = records_to_frame(client.latest())["timestamp"].max().floor(bundle.frequency)
 
+    steps = max(backtest_hours, 1)
     start = anchor - (lookback - 1) * step
-    end = anchor + step - pd.Timedelta(seconds=1)
+    end = anchor + steps * step - pd.Timedelta(seconds=1)
     records = client.by_range(start.to_pydatetime(), end.to_pydatetime())
     if not records:
         raise ValueError(f"The API returned no {client.source} readings between {start} and {end}.")
+    readings = records_to_frame(records)
 
-    hourly, report = to_hourly(records_to_frame(records), bundle.frequency)
-    hourly = hourly[hourly.index <= anchor]
-    if len(hourly) < needed:
-        raise ValueError(
-            f"Got {len(hourly)} hours of history from the API but the model needs {needed}. "
-            f"Check that the database covers {start} to {anchor} and that the range endpoint isn't capping results."
-        )
+    history, report, predictions = None, None, []
+    for k in range(steps):
+        cutoff = anchor + k * step
+        # Preprocess only what was known at the cutoff, so gap filling can't see later readings.
+        hourly, step_report = to_hourly(readings[readings["timestamp"] < cutoff + step], bundle.frequency)
+        hourly = hourly[hourly.index <= cutoff]
+        if len(hourly) < needed:
+            raise ValueError(
+                f"Got {len(hourly)} hours of history from the API but the model needs {needed}. "
+                f"Check that the database covers {start} to {cutoff} and that the range endpoint isn't capping results."
+            )
+        if history is None:
+            history, report = hourly, step_report
+        predictions.append(forecast(hourly, bundle, horizon))
 
-    predictions = forecast(hourly, bundle, horizon)
+    predictions = pd.concat(predictions)
     actuals = _fetch_actuals(client, predictions.index, bundle) if as_of is not None else None
-    return PipelineResult(client.source, hourly.index[-1], bundle, hourly, report, predictions, actuals)
+    return PipelineResult(client.source, history.index[-1], bundle, history, report, predictions, actuals)
 
 
 def _fetch_actuals(client: ReadingsClient, index: pd.DatetimeIndex, bundle: ModelBundle) -> pd.Series | None:
