@@ -98,7 +98,7 @@ As built by Task 2 (see `sql/schema.sql` and `mongodb/collection_design.md`):
   ends in `Z`) and the seven values nested under `measurements`, `null` when missing.
 
 Task 4 handles both shapes as they are. It averages minutes into hours, ignoring missing minutes, and
-interpolates hours that have no readings at all.
+interpolates gaps of up to 3 hours. Longer outages stay missing, as in Task 1's training.
 
 ## 5. Task 3 → Task 4: API routes
 

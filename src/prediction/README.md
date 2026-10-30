@@ -5,7 +5,7 @@
 1. **Loads the trained model** from `models/`: `model.joblib` and `model_metadata.json` from Task 1.
 2. **Fetches** the latest reading, then the history before it, from the Task 3 API (`--source sql` or `--source mongo`).
 3. **Preprocesses** the readings the same way as Task 1. It averages the minute readings into hourly means,
-   fills hours with no readings by time interpolation, and rebuilds the model's lag and rolling-mean features.
+   fills gaps of up to 3 hours by time interpolation, and rebuilds the model's lag and rolling-mean features.
 4. **Forecasts** `global_active_power` for the next hour.
 
 Results are printed, saved as JSON, and plotted to `outputs/predictions/`.
@@ -79,8 +79,10 @@ Example: a walk-forward backtest on real data with the Task 1 model, through the
   `--backtest-hours` measures accuracy over many hours instead.
 - **Incomplete hours are dropped.** If the latest hour isn't finished yet, its partial average isn't
   treated as a real reading; that hour is forecast instead.
-- **Missing readings stay missing.** Null minutes are ignored in the hourly mean, and backtest errors only
-  use hours that were really measured (shown as `n/a` otherwise).
-- **Clear failures.** If the API is down, the model is missing, or there isn't enough history,
-  the script says exactly what's wrong.
+- **No invented data.** Null minutes are ignored in the hourly mean. Only gaps of up to 3 hours are
+  interpolated, and only between real readings. Task 1 trains on measured hours only, so if a forecast
+  needs readings from a longer outage, the script says so instead of guessing. Backtests skip those hours
+  and list them, and errors are only computed against hours that were really measured.
+- **Clear failures.** If the API is down, the model is missing, the arguments are invalid, or the needed
+  readings aren't there, the script says exactly what's wrong.
 - **Predictions are clipped at 0 kW**, since power use can't be negative.

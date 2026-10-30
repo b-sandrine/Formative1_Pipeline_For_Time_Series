@@ -14,6 +14,10 @@ import pandas as pd
 
 from src.prediction import MEASUREMENTS, TARGET
 
+# Task 1 trains only on hours with real readings, so only short gaps are filled. Longer
+# outages stay missing and a forecast that needs them fails instead of inventing inputs.
+MAX_GAP_HOURS = 3
+
 KEY_ALIASES = {
     "measured_at": "timestamp",
     "datetime": "timestamp",
@@ -57,7 +61,7 @@ class PreprocessReport:
     dropped_partial_hour: bool
 
 
-def records_to_frame(records: list[dict]) -> pd.DataFrame:
+def records_to_frame(records: list[dict], target: str | None = TARGET) -> pd.DataFrame:
     """Flattens API records (flat SQL rows or nested Mongo documents) into one row per reading."""
     if not records:
         raise ValueError("No records to preprocess.")
@@ -70,45 +74,57 @@ def records_to_frame(records: list[dict]) -> pd.DataFrame:
             raise ValueError(f"Records have no timestamp field. Keys seen: {sorted(df.columns)}")
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, format="mixed").dt.tz_localize(None)
 
-    if TARGET not in df.columns:
-        raise ValueError(f"Records have no {TARGET!r} field. Keys seen: {sorted(df.columns)}")
+    if target and target not in df.columns:
+        raise ValueError(f"Records have no {target!r} field. Keys seen: {sorted(df.columns)}")
     columns = [c for c in MEASUREMENTS if c in df.columns]
     df[columns] = df[columns].apply(pd.to_numeric, errors="coerce")
     return df[["timestamp", *columns]].sort_values("timestamp").reset_index(drop=True)
 
 
-def to_hourly(df: pd.DataFrame, freq: str = "1h") -> tuple[pd.DataFrame, PreprocessReport]:
-    """Resamples to `freq` means and fills gaps by time interpolation, as in Task 1.
+def to_hourly(
+    df: pd.DataFrame, freq: str = "1h", target: str = TARGET, drop_partial: bool = False
+) -> tuple[pd.DataFrame, PreprocessReport]:
+    """Resamples readings to `freq` means and fills short gaps (see `fill_short_gaps`)."""
+    hourly, dropped = resample_hourly(df, freq, drop_partial)
+    hourly, imputed, longest = fill_short_gaps(hourly, target)
+    return hourly, PreprocessReport(len(df), len(hourly), imputed, longest, dropped)
 
-    Works for both minute-level and already-hourly records. A trailing bucket that is
-    still filling up (minute data whose last hour is incomplete) is dropped so a partial
-    average is never treated as a real reading.
+
+def resample_hourly(df: pd.DataFrame, freq: str = "1h", drop_partial: bool = False) -> tuple[pd.DataFrame, bool]:
+    """Averages readings (minute-level or already hourly) into `freq` buckets; missing values are skipped.
+
+    With `drop_partial`, used on live data, a final hour that is still filling up is dropped so a
+    partial average isn't treated as a real reading. Returns the frame and whether that happened.
     """
     series = df.set_index("timestamp")
     series = series[~series.index.duplicated(keep="last")].sort_index()
     step = pd.Timedelta(freq)
 
-    dropped_partial = False
-    if len(series) > 1:
+    dropped = False
+    if drop_partial and len(series) > 1:
         spacing = series.index.to_series().diff().median()
         last = series.index[-1]
         if spacing < step and last + spacing < last.floor(freq) + step:
             series = series[series.index < last.floor(freq)]
-            dropped_partial = True
+            dropped = True
+    return series.resample(freq).mean(), dropped
 
-    hourly = series.resample(freq).mean()
-    missing = hourly[TARGET].isna()
-    longest_gap = int(missing.groupby((~missing).cumsum()).sum().max()) if missing.any() else 0
-    hourly = hourly.interpolate(method="time", limit_direction="both")
 
-    report = PreprocessReport(
-        raw_records=len(df),
-        hours=len(hourly),
-        imputed_hours=int(missing.sum()),
-        longest_gap_hours=longest_gap,
-        dropped_partial_hour=dropped_partial,
-    )
-    return hourly, report
+def fill_short_gaps(hourly: pd.DataFrame, target: str = TARGET) -> tuple[pd.DataFrame, int, int]:
+    """Time-interpolates gaps of up to MAX_GAP_HOURS between real readings.
+
+    Only uses values on both sides of a gap, never extrapolates past the last reading.
+    Returns the frame, how many hours were filled, and the longest gap seen.
+    """
+    missing = hourly[target].isna()
+    if not missing.any():
+        return hourly, 0, 0
+    gap_length = missing.groupby((~missing).cumsum()).transform("sum")
+    long_gap = missing & (gap_length > MAX_GAP_HOURS)
+    filled = hourly.interpolate(method="time", limit_area="inside")
+    filled.loc[long_gap] = np.nan
+    imputed = int((missing & filled[target].notna()).sum())
+    return filled, imputed, int(gap_length[missing].max())
 
 
 def build_features(hourly: pd.DataFrame, features: list[str], target: str = TARGET) -> pd.DataFrame:

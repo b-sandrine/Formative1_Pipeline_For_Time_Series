@@ -1,13 +1,7 @@
 """Task 4: fetch readings from the API, preprocess them, and forecast household power use."""
 
+from src.database.dataset_reader import MEASUREMENT_COLUMNS as MEASUREMENTS
+
 TARGET = "global_active_power"
 
-MEASUREMENTS = [
-    "global_active_power",
-    "global_reactive_power",
-    "voltage",
-    "global_intensity",
-    "sub_metering_1",
-    "sub_metering_2",
-    "sub_metering_3",
-]
+__all__ = ["MEASUREMENTS", "TARGET"]
