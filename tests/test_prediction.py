@@ -10,10 +10,11 @@ from sklearn.linear_model import Ridge
 
 from src.prediction import TARGET
 from src.prediction.api_client import APIError, ReadingsClient
-from src.prediction.forecast import forecast
+from src.prediction.forecast import MissingDataError, forecast
 from src.prediction.mock_api import create_app, synthetic_hourly
 from src.prediction.model_loader import load_bundle
 from src.prediction.pipeline import run
+from scripts.predict import parse_args
 from src.prediction.preprocessing import (
     build_features,
     max_horizon,
@@ -117,9 +118,11 @@ def test_records_to_frame_rejects_records_without_target():
 def test_to_hourly_averages_minutes_and_drops_incomplete_last_hour():
     index = pd.date_range("2010-01-01 00:00", "2010-01-01 02:29", freq="1min")
     df = pd.DataFrame({"timestamp": index, TARGET: np.r_[np.full(60, 1.0), np.full(60, 3.0), np.full(30, 9.0)]})
-    hourly, report = to_hourly(df)
+    hourly, report = to_hourly(df, drop_partial=True)
     assert hourly[TARGET].tolist() == [1.0, 3.0]
     assert report.dropped_partial_hour
+    # Historical data (backtests) keeps an hour whose final minutes are missing.
+    assert to_hourly(df)[0][TARGET].tolist() == [1.0, 3.0, 9.0]
 
 
 def test_to_hourly_interpolates_missing_hours():
@@ -198,7 +201,7 @@ def test_pipeline_handles_minute_level_readings(minute_http, hourly, model_dir, 
 
 
 def test_pipeline_reports_too_little_history(http, hourly, model_dir):
-    with pytest.raises(ValueError, match="needs 168"):
+    with pytest.raises(MissingDataError, match="lag_168"):
         run(ReadingsClient(http=http), model_dir, as_of=hourly.index[100])
 
 
@@ -253,3 +256,75 @@ def test_walk_forward_backtest_forecasts_each_hour_from_its_own_past(minute_http
     assert result.history.index[-1] == as_of
     with pytest.raises(ValueError, match="--as-of"):
         run(ReadingsClient(http=minute_http), ROOT / "models", backtest_hours=12)
+
+
+def test_long_gaps_stay_missing_and_tails_are_not_extrapolated():
+    times = pd.to_datetime(["2010-01-01 00:00", "2010-01-01 02:00", "2010-01-01 08:00", "2010-01-01 09:00"])
+    df = pd.DataFrame({"timestamp": times, TARGET: [1.0, 3.0, 9.0, 10.0]})
+    hourly, report = to_hourly(df)
+    assert hourly[TARGET].iloc[1] == 2.0
+    assert hourly[TARGET].iloc[3:8].isna().all()
+    assert (report.imputed_hours, report.longest_gap_hours) == (1, 5)
+    window = hourly.reindex(pd.date_range("2010-01-01 00:00", "2010-01-01 11:00", freq="1h"))
+    from src.prediction.preprocessing import fill_short_gaps
+
+    assert fill_short_gaps(window)[0][TARGET].iloc[-2:].isna().all()
+
+
+def test_walk_forward_skips_hours_in_a_data_gap_without_repeating_any(hourly):
+    minutes = hourly.resample("1min").ffill()
+    gap = (minutes.index >= hourly.index[-20]) & (minutes.index < hourly.index[-15])
+    http = api_client(create_app(minutes[~gap]))
+    result = run(ReadingsClient(http=http), ROOT / "models", as_of=hourly.index[-30], backtest_hours=12)
+    assert result.predictions.index.is_unique
+    assert set(result.skipped_hours) == set(hourly.index[-19:-17])
+    assert set(result.predictions.index) == set(hourly.index[-29:-17]) - set(result.skipped_hours)
+    assert result.mae is not None
+
+
+def test_by_range_does_not_lose_readings_that_share_a_timestamp():
+    ts = "2010-01-01T00:00:00"
+    minutes = [0, 1, 1, 2, 3, 3]
+    rows = [{"measurement_id": i, "measured_at": f"2010-01-01T00:0{m}:00", TARGET: 1.0} for i, m in enumerate(minutes)]
+
+    def handler(request):
+        start = request.url.params["start_date"]
+        limit = int(request.url.params["limit"])
+        page = [r for r in rows if r["measured_at"] >= start][:limit]
+        return httpx.Response(200, json={"readings": page})
+
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://testserver")
+    client = ReadingsClient(http=http)
+    got = client.by_range(pd.Timestamp(ts).to_pydatetime(), pd.Timestamp("2010-01-02").to_pydatetime(), page_size=2)
+    assert sorted(r["measurement_id"] for r in got) == list(range(6))
+
+
+def test_records_to_frame_uses_the_requested_target():
+    df = records_to_frame([{"measured_at": "2010-01-01T00:00:00", "voltage": 240}], target="voltage")
+    assert df.loc[0, "voltage"] == 240
+    with pytest.raises(ValueError, match="global_intensity"):
+        records_to_frame([{"measured_at": "2010-01-01T00:00:00", "voltage": 240}], target="global_intensity")
+
+
+@pytest.mark.parametrize("flag", ["--horizon", "--backtest-hours", "--lookback-hours"])
+def test_cli_rejects_non_positive_numbers(flag, capsys):
+    with pytest.raises(SystemExit):
+        parse_args([flag, "0"])
+    assert "must be at least 1" in capsys.readouterr().err
+
+
+def test_run_validates_arguments_before_calling_the_api(model_dir):
+    client = ReadingsClient(http=httpx.Client(transport=httpx.MockTransport(lambda r: pytest.fail("API called"))))
+    for kwargs in ({"horizon": 0}, {"backtest_hours": -3}, {"backtest_hours": 5}):
+        with pytest.raises(ValueError):
+            run(client, model_dir, **kwargs)
+
+
+def test_client_closes_only_the_http_client_it_created():
+    injected = httpx.Client()
+    with ReadingsClient(http=injected):
+        pass
+    assert not injected.is_closed
+    with ReadingsClient() as client:
+        owned = client.http
+    assert owned.is_closed
