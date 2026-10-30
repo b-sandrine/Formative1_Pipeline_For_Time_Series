@@ -128,9 +128,9 @@ hours and reports the error against real readings.
 
 ## Team
 
-| Member | Task | Main components |
-|---|---|---|
-| Premier | Task 1: EDA and modeling | analysis notebook, feature engineering, model tuning and training |
-| Sandrine | Task 2: databases | MySQL schema and ERD, MongoDB design, importers, queries |
-| Happy | Task 3: API | Flask CRUD and time-series routes for MySQL and MongoDB |
-| Aimé | Task 4: forecasting | API client, preprocessing pipeline, forecast script, integration contract |
+| Member | GitHub | Task | Main components |
+|---|---|---|---|
+| Premier | [primitivecodes](https://github.com/primitivecodes) | Task 1: EDA and modeling | analysis notebook, feature engineering, model tuning and training |
+| Sandrine | [b-sandrine](https://github.com/b-sandrine) | Task 2: databases | MySQL schema and ERD, MongoDB design, importers, queries |
+| Happy | [acele-happy](https://github.com/acele-happy) | Task 3: API | Flask CRUD and time-series routes for MySQL and MongoDB |
+| Aimé | [igaimerca](https://github.com/igaimerca) | Task 4: forecasting | API client, preprocessing pipeline, forecast script, integration contract |
