@@ -14,7 +14,7 @@ Task 4 (scripts/predict.py) ── fetches from Task 3, preprocesses, loads Task
 ## 1. The problem
 
 - **Target:** `global_active_power` (kW), the household's **hourly mean**.
-- **Task:** forecast the next hour (and up to 24 hours ahead, recursively).
+- **Task:** forecast the next hour. Longer recursive forecasts are supported only when the model's features can be built for future hours; features using other measurements limit the horizon to the number of hours for which those measurements are known. The current model uses lagged voltage and intensity, so it forecasts one hour ahead.
 - **Granularity:** the data is one reading per minute (about 2.07M rows, 2006-12-16 17:24 to
   2010-11-26 21:02), stored that way in both databases. The model works on **hourly means**
   (34,589 hours). Task 4 averages the minutes into hours itself, after fetching them.
@@ -107,16 +107,17 @@ Base URL `http://localhost:5000` (Task 3's default). The same routes exist under
 | Method | Route | Purpose |
 |---|---|---|
 | GET | `/{db}/readings/latest` | most recent reading |
-| GET | `/{db}/readings?start_date=...&end_date=...&limit=...` | readings with `start_date <= time <= end_date`, **ascending** |
+| GET | `/{db}/readings?start_date=...&end_date=...&limit=...` | readings in the half-open range `[start_date, end_date)`, **ascending** |
 | GET | `/{db}/readings/{id}` | one reading |
 | POST | `/{db}/readings` | create |
 | PUT | `/{db}/readings/{id}` | update |
 | DELETE | `/{db}/readings/{id}` | delete |
 
-- Dates are ISO 8601 (`2010-11-20T17:00:00`).
+- Dates are local clock times in ISO 8601 form (`2010-11-20T17:00:00`), without a numeric time-zone offset. Date-only bounds include the whole end date; date-time end bounds are exclusive.
 - The range route caps `limit` at 20,000. Task 4 asks for pages of 20,000 and fetches the next
   page from the last timestamp when a page comes back full.
-- Return the records as the databases store them. Either of these works:
+- The range route returns an object with `count`, `limit`, `may_have_more`, and `readings`.
+  Each reading uses the same flattened field names for MySQL and MongoDB:
 
 ```json
 {"measurement_id": 2, "source_id": 1, "measured_at": "2006-12-16T17:25:00",
@@ -124,14 +125,8 @@ Base URL `http://localhost:5000` (Task 3's default). The same routes exist under
  "sub_metering_1": 0.0, "sub_metering_2": 1.0, "sub_metering_3": 16.0}
 ```
 
-```json
-{"_id": "...", "source_id": "...", "timestamp": "2006-12-16T17:25:00Z",
- "measurements": {"global_active_power": 5.36, "global_reactive_power": 0.436, "voltage": 233.63,
-                  "global_intensity": 23.0, "sub_metering_1": 0.0, "sub_metering_2": 1.0, "sub_metering_3": 16.0}}
-```
-
-A bare list or a list wrapped as `{"data": [...]}` are both fine, and so are Mongo `$date` objects.
-Keep the field names from section 2. `Decimal` values serialized as strings (`"5.360"`) are fine too.
+MongoDB's stored `timestamp` and nested `measurements` document are normalized to this same API
+shape. Missing measurements are `null`; keep the field names from section 2.
 
 Without MySQL or MongoDB, `python -m src.prediction.mock_api --data dataset/household_power_consumption.txt`
 runs the real Task 3 Flask app on in-memory data, so Task 4 can still be run end to end.
